@@ -104,7 +104,7 @@ jobs:
         };
         foreach (new DirectoryIterator(__DIR__) as $path) {
             if ($path->isFile()) {
-                if (in_array($path->getFilename(), ['index.json', 'README.md'])) {
+                if (in_array($path->getFilename(), ['index.json', 'README.md','.gitignore'])) {
                     continue;
                 }
                 $fileName = $path->getFilename();
