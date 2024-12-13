@@ -1,0 +1,153 @@
+name: Repository Metadata
+
+on: 
+  push:
+    branches: 
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  update-metadata-php:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Set up PHP
+      uses: shivammathur/setup-php@v2
+      with:
+        php-version: '8.2'
+
+    - name: Scan Repository and Generate Metadata
+      run: |
+        php << 'EOF'
+        <?php
+        function mdVersionedTable($data) {
+            $table = "| ";
+            $table .= implode(" | ", array_keys($data));
+            $table .= " |\n";
+            $table .= "| ";
+            $table .= implode(" | ", array_fill(0, count($data), "---"));
+            $table .= " |\n";
+            
+            $longest = max(array_map('count', $data));
+            for ($i = 0; $i < $longest; $i++) {
+                $table .= "| ";
+                foreach ($data as $version => $files) {
+                    $table .= $files[$i] ?? '';
+                    $table .= " | ";
+                }
+                $table .= "\n";
+            }
+
+            return $table;
+        }
+
+        $metadata = new class {
+            public $last_updated;
+            public $libs = [];
+            public $extensions = [];
+            public $runtimes = [];
+            public $binaries = [];
+
+            public function __construct() {
+                $this->last_updated = date('c');
+            }
+
+            public function sort() {
+                sort($this->libs);
+                ksort($this->extensions);
+                ksort($this->runtimes);
+                ksort($this->binaries);
+                array_walk($this->extensions, function (&$files) {
+                    sort($files);
+                });
+                array_walk($this->runtimes, function (&$files) {
+                    sort($files);
+                });
+                array_walk($this->binaries, function (&$files) {
+                    sort($files);
+                });
+            }
+            public function json()
+            {
+                return json_encode($this, JSON_PRETTY_PRINT);
+            }
+
+            public function md()
+            {
+                $date = date_create($this->last_updated)->format(DateTimeInterface::RFC2822);
+                $md = "# php-wasm Artifacts\n";
+                $md = "## Last Updated: {$date}\n";
+                $md .= "### Libraries\n";
+                $md .= "| Library |\n";
+                $md .= "| --- |\n";
+                foreach ($this->libs as $lib) {
+                    $md .= "| $lib |\n";
+                }
+                $md .= "\n### Extensions\n";
+                $md .= mdVersionedTable($this->extensions);
+                $md .= "\n### Runtimes\n";
+                $md .= mdVersionedTable($this->runtimes);
+                $md .= "\n### Binaries\n";
+                $md .= mdVersionedTable($this->binaries);
+
+                return $md;
+            }
+        };
+        foreach (new DirectoryIterator(__DIR__) as $path) {
+            if ($path->isFile()) {
+                if (in_array($path->getFilename(), ['index.json', 'README.md'])) {
+                    continue;
+                }
+                $fileName = $path->getFilename();
+                $ext = $path->getExtension();
+                $isSharedObject = $ext === 'so';
+                
+                if (($isSharedObject && str_starts_with($fileName, 'lib')) || $ext === 'dat') {
+                    $metadata->libs[] = $fileName;
+                    continue;
+                }
+
+
+                if (preg_match('/^php\d+\.\d+/', $fileName)) {
+                    $version = substr($fileName, 3, 3);
+                    $tag = substr($fileName, 7);
+                    if($isSharedObject) {
+                        $metadata->extensions[$version][] = $fileName;
+                        continue;
+                    } 
+                    if ($ext === 'js') {
+                        $metadata->runtimes[$version][] = $fileName;
+                        continue;
+                    }
+                    if ($ext === 'wasm') {
+                        $metadata->binaries[$version][] = $fileName;
+                        continue;
+                    }
+                }
+
+                throw new Exception("Unknown file: $fileName");
+            } 
+        }
+
+        $metadata->sort();
+        file_put_contents('index.json', $metadata->json());
+        file_put_contents('README.md', $metadata->md());
+        echo "Metadata scan complete.\n";
+        EOF
+
+    - name: Commit and Push Changes
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add index.json
+        git commit -m "Update repository metadata index (PHP)" || echo "No changes to commit"
+        git push
